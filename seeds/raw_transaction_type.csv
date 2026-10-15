@@ -1,0 +1,6 @@
+transaction_type_id,transaction_type_description,is_adjustment
+1,mid_term_adjustment,true
+2,renewal,false
+3,new_policy,false
+4,correction,true
+5,cancellation,true

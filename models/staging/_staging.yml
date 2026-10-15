@@ -1,0 +1,61 @@
+models:
+  - name: stg_policy_transaction
+    description: "One row per policy transaction. Types cast, JSON breakdown unpacked, surrogate key added."
+    columns:
+      - name: transaction_sk
+        description: "Surrogate key. The source has no transaction id."
+        data_tests:
+          - unique
+          - not_null
+      - name: inception_policy_id
+        description: "Policy key. Stable across mid-term adjustments; a renewal gets a new one."
+        data_tests:
+          - not_null
+      - name: premium_amount
+        data_tests:
+          - not_null
+      - name: tax_amount
+        data_tests:
+          - not_null
+      - name: total_amount
+        data_tests:
+          - not_null
+
+  - name: stg_product
+    description: "One row per product, with product_code split into its four parts."
+    columns:
+      - name: product_id
+        data_tests:
+          - unique
+          - not_null
+      - name: product_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['flex', 'fixed', 'short']
+      - name: vehicle_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['car', 'van', 'scooter', 'taxi']
+
+  - name: stg_transaction_type
+    description: "One row per transaction type."
+    columns:
+      - name: transaction_type_id
+        data_tests:
+          - unique
+          - not_null
+      - name: transaction_type_description
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['new_policy', 'mid_term_adjustment', 'renewal', 'correction', 'cancellation']
+
+  - name: stg_user
+    description: "One row per policyholder."
+    columns:
+      - name: user_id
+        data_tests:
+          - unique
+          - not_null

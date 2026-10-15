@@ -1,0 +1,6 @@
+zego_ae_task:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: zego.duckdb

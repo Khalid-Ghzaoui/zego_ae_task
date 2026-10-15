@@ -1,0 +1,27 @@
+name: zego_ae_task
+version: "1.0.0"
+config-version: 2
+profile: zego_ae_task
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+
+models:
+  zego_ae_task:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
+
+seeds:
+  zego_ae_task:
+    +schema: raw
+    raw_policy_transaction:
+      +column_types:
+        effective_start_date: date
+        effective_end_date: date
+        transaction_gwp: decimal(10,2)
+        policy_total_gwp: decimal(10,2)
+        transaction_breakdown: varchar

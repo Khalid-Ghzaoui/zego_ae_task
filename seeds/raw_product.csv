@@ -1,0 +1,6 @@
+product_id,product_code,is_billed_upfront
+10,gb_delivery_fixed_car,true
+11,gb_delivery_fixed_van,true
+12,gb_delivery_flex_scooter,false
+13,gb_delivery_short_scooter,true
+14,gb_delivery_fixed_taxi,true
