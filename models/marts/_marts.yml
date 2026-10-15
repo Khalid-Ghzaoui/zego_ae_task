@@ -1,0 +1,80 @@
+models:
+  - name: dim_product
+    description: "One row per product. product_code split into country, vertical, product_type and vehicle_type."
+    columns:
+      - name: product_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: dim_transaction_type
+    description: "One row per transaction type, with behaviour flags used by the facts."
+    columns:
+      - name: transaction_type_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: dim_user
+    description: "One row per policyholder."
+    columns:
+      - name: user_id
+        data_tests:
+          - unique
+          - not_null
+
+  - name: dim_month
+    description: "One row per calendar month from Jan 2024 to the current month."
+    columns:
+      - name: month_start_date
+        data_tests:
+          - unique
+          - not_null
+
+  - name: fct_policy_transaction
+    description: "One row per policy transaction. Additive measures only; policy_total_gwp is deliberately excluded (it is a running total and must never be summed)."
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('stg_policy_transaction')
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "total_amount = premium_amount + tax_amount"
+    columns:
+      - name: transaction_sk
+        data_tests:
+          - unique
+          - not_null
+      - name: user_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_user')
+                field: user_id
+      - name: product_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_product')
+                field: product_id
+      - name: transaction_type_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_transaction_type')
+                field: transaction_type_id
+      - name: accounting_date
+        data_tests:
+          - not_null
+      - name: previous_transaction_was_mta
+        data_tests:
+          - not_null
+      - name: tax_rate
+        description: "Tax / premium. Null when premium is zero."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 0.20
+              config:
+                severity: warn
