@@ -41,6 +41,12 @@ models:
           arguments:
             expression: "total_amount = premium_amount + tax_amount"
     columns:
+      - name: inception_policy_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fct_policy')
+                field: inception_policy_id
       - name: transaction_sk
         data_tests:
           - unique
@@ -78,3 +84,23 @@ models:
                 max_value: 0.20
               config:
                 severity: warn
+
+  - name: fct_policy
+    description: "One row per policy. Net totals across all of the policy's transactions. product_id is the product the policy was sold as."
+    columns:
+      - name: inception_policy_id
+        data_tests:
+          - unique
+          - not_null
+      - name: user_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_user')
+                field: user_id
+      - name: product_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_product')
+                field: product_id
