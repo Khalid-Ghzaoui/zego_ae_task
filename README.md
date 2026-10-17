@@ -8,7 +8,7 @@ them. Assumptions are listed at the end.
 
 ## How to run
 
-Requires Python 3.10+. DuckDB needs no account or credentials. Tested with dbt-core 1.12.
+Requires Python 3.10+. DuckDB needs no account or credentials. Tested with dbt-core 1.12
 
 ```bash
 cd ..
