@@ -101,3 +101,129 @@ dictionary's structure exactly. The values are invented, and each row exists to
 exercise a specific rule above: a mid-term vehicle change, a correction, a full refund,
 a partial cancellation after an adjustment, a renewal, a £0 policy and a policy sold
 before 2025.
+
+---
+
+## 4. Data model (Part 1.2)
+
+### Diagram
+
+```mermaid
+erDiagram
+    dim_user ||--o{ fct_policy_transaction : "makes"
+    dim_product ||--o{ fct_policy_transaction : "insured as"
+    dim_transaction_type ||--o{ fct_policy_transaction : "classifies"
+    dim_month ||..o{ fct_policy_transaction : "month of accounting_date"
+    dim_user ||--o{ fct_policy : "owns"
+    dim_product ||--o{ fct_policy : "sold as"
+    fct_policy ||..|{ fct_policy_transaction : "rolled up from (not a BI join)"
+
+    fct_policy_transaction {
+        string  transaction_sk PK
+        int     inception_policy_id FK
+        int     user_id FK
+        int     product_id FK
+        int     transaction_type_id FK
+        date    accounting_date
+        decimal transaction_gwp
+        decimal premium_amount
+        decimal tax_amount
+        decimal total_amount
+        decimal tax_rate "Q4"
+        boolean previous_transaction_was_mta "Q3"
+    }
+    fct_policy {
+        int     inception_policy_id PK
+        int     user_id FK
+        int     product_id FK "product sold as"
+        date    policy_start_date
+        decimal net_gwp
+        decimal net_total_amount "Q1"
+        decimal reported_policy_total_gwp "reconciliation only"
+    }
+    dim_product {
+        int     product_id PK
+        string  product_type
+        string  vehicle_type
+        string  vertical
+        string  country_code
+        boolean is_billed_upfront
+    }
+    dim_transaction_type {
+        int     transaction_type_id PK
+        string  transaction_type_description
+        boolean is_mid_term_adjustment
+        boolean is_cancellation
+    }
+    dim_user {
+        int     user_id PK
+    }
+    dim_month {
+        date    month_start_date PK
+    }
+```
+
+### Models and their grain
+
+| Model | One row per | Answers |
+|---|---|---|
+| `fct_policy_transaction` | transaction | Q2 (GWP by month and vehicle), Q3, Q4 |
+| `fct_policy` | policy | Q1 |
+| `dim_product` | product | Filter by product type and vehicle |
+| `dim_transaction_type` | transaction type | Filter by type; flags used by the facts |
+| `dim_user` | policyholder | |
+| `dim_month` | calendar month | Q2's "missing months as zero" |
+
+Staging models (`models/staging/`) sit underneath: one per source table, where types
+are cast, the JSON breakdown is unpacked and `product_code` is split. They contain no
+business logic, so any future model can build on them.
+
+### Why this structure
+
+**A star schema** keeps the numbers in facts and the descriptions in dimensions, joined
+many-to-one. It's the shape BI tools like Looker are built for. Every join can only
+match one row on the dimension side, so joins can't duplicate rows. That is the root
+cause of fanout (Part 2.1).
+
+**One model, two grains.** The brief asks for a single model. This is one dbt graph,
+with two facts sharing the same dimensions, so filters behave the same everywhere.
+There are two facts because the questions sit at two grains: Q1 asks about *policies*,
+and Q2–Q4 ask about *transactions*. Forcing both into one table would mean either
+repeating policy-level values on every transaction (the trap `policy_total_gwp` sets in
+the source) or making every BI user re-aggregate transactions correctly by hand. The
+two facts are never joined to each other in BI: `fct_policy` is *built from*
+`fct_policy_transaction`, so their totals can never disagree.
+
+**Logic lives in the model, not in queries.** The Q3 flag, the tax rate, the accounting
+date and the month list are all built into the model, so any BI user gets the same
+answer without re-deriving it. This is why the queries in `analyses/` are short.
+
+**Considered and rejected:**
+- **One wide table:** simpler to query, but it mixes the two grains, so policy-level
+  values repeat on every transaction and get double-counted.
+- **Transaction fact only:** Q1 would need every user to aggregate policies themselves,
+  which is where double-counting creeps in.
+- **An intermediate layer:** at this size it would add pass-through models without
+  adding meaning. I'd add one as soon as logic is shared across several marts.
+
+### How it scales
+
+**New product types**
+- A new product code (for example a new vertical, country or vehicle) is split into its
+  parts automatically and appears in `dim_product`. GWP reporting picks it up with no
+  code change.
+- The `accepted_values` tests on `product_type` and `vehicle_type` are a **deliberate
+  alarm**: they fail when an unknown value appears, so it gets reviewed and the list
+  updated (one line) rather than flowing silently into reports.
+
+**New transaction types**
+- A new type is a new row in `transaction_type`. Its transactions flow into the facts
+  and GWP straight away.
+- Only if it needs *special handling* (like cancellations' accounting date) does it need
+  one new flag in `dim_transaction_type`. The facts filter on flags, never on ids, so
+  that's the only place that changes.
+- The `accepted_values` test on the description flags its arrival.
+
+**Volume**
+- `fct_policy_transaction` would become incremental at production scale. See Part 2.2.
+- The dimensions stay small.
