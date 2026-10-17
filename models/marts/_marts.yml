@@ -1,38 +1,50 @@
 models:
   - name: dim_product
-    description: "One row per product. product_code split into country, vertical, product_type and vehicle_type."
+    description: "One row per product. product_code split into country, vertical, product_type and vehicle_type so BI users can filter directly."
     columns:
       - name: product_id
+        description: "Primary key."
         data_tests:
           - unique
           - not_null
+      - name: product_type
+        description: "flex, fixed or short (third part of product_code)."
+      - name: vehicle_type
+        description: "car, van, scooter or taxi (fourth part of product_code)."
 
   - name: dim_transaction_type
-    description: "One row per transaction type, with behaviour flags used by the facts."
+    description: "One row per transaction type, with the behaviour flags the facts use instead of hard-coded ids."
     columns:
       - name: transaction_type_id
+        description: "Primary key."
         data_tests:
           - unique
           - not_null
+      - name: is_mid_term_adjustment
+        description: "True for mid_term_adjustment. Drives previous_transaction_was_mta."
+      - name: is_cancellation
+        description: "True for cancellation. Drives accounting_date."
 
   - name: dim_user
-    description: "One row per policyholder."
+    description: "One row per policyholder. Address lines excluded; in production remaining personal data would be masked."
     columns:
       - name: user_id
+        description: "Primary key."
         data_tests:
           - unique
           - not_null
 
   - name: dim_month
-    description: "One row per calendar month from Jan 2024 to the current month."
+    description: "One row per calendar month from Jan 2024 to the current month. Lets BI tools show months with no transactions as zero."
     columns:
       - name: month_start_date
+        description: "Primary key. First day of the month."
         data_tests:
           - unique
           - not_null
 
   - name: fct_policy_transaction
-    description: "One row per policy transaction. Additive measures only; policy_total_gwp is deliberately excluded (it is a running total and must never be summed)."
+    description: "One row per policy transaction. Additive measures only; policy_total_gwp is deliberately excluded (it is a running total and must never be summed). Answers Q2, Q3 and Q4."
     data_tests:
       - dbt_utils.equal_rowcount:
           arguments:
@@ -40,14 +52,12 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "total_amount = premium_amount + tax_amount"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "transaction_gwp = premium_amount"
     columns:
-      - name: inception_policy_id
-        data_tests:
-          - relationships:
-              arguments:
-                to: ref('fct_policy')
-                field: inception_policy_id
       - name: transaction_sk
+        description: "Primary key. Hash of inception_policy_id, adjustment_policy_id, change_number and transaction_type_id (the source has no transaction id)."
         data_tests:
           - unique
           - not_null
@@ -57,7 +67,15 @@ models:
               arguments:
                 to: ref('dim_user')
                 field: user_id
+      - name: inception_policy_id
+        description: "Policy key. Stable across mid-term adjustments; a renewal gets a new one."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fct_policy')
+                field: inception_policy_id
       - name: product_id
+        description: "Product on this transaction. Can change mid-policy (e.g. a vehicle change), so GWP follows the vehicle insured at the time."
         data_tests:
           - relationships:
               arguments:
@@ -70,13 +88,19 @@ models:
                 to: ref('dim_transaction_type')
                 field: transaction_type_id
       - name: accounting_date
+        description: "Date the transaction's GWP is reported in. Cancellation date for cancellations, effective_start_date otherwise."
         data_tests:
           - not_null
-      - name: previous_transaction_was_mta
-        data_tests:
-          - not_null
+      - name: transaction_gwp
+        description: "Gross written premium for this transaction. Negative for refunds."
+      - name: premium_amount
+        description: "Premium from transaction_breakdown. Tested equal to transaction_gwp."
+      - name: tax_amount
+        description: "Tax from transaction_breakdown."
+      - name: total_amount
+        description: "Premium + tax from transaction_breakdown. Tested equal to premium_amount + tax_amount."
       - name: tax_rate
-        description: "Tax / premium. Null when premium is zero."
+        description: "Q4. Tax / premium. Null when premium is zero."
         data_tests:
           - dbt_utils.accepted_range:
               arguments:
@@ -84,11 +108,16 @@ models:
                 max_value: 0.20
               config:
                 severity: warn
+      - name: previous_transaction_was_mta
+        description: "Q3. True if the previous transaction on the same policy (ordered by change_number) was a mid-term adjustment. False for a policy's first transaction."
+        data_tests:
+          - not_null
 
   - name: fct_policy
-    description: "One row per policy. Net totals across all of the policy's transactions. product_id is the product the policy was sold as."
+    description: "One row per policy. Net totals across all of the policy's transactions. Answers Q1."
     columns:
       - name: inception_policy_id
+        description: "Primary key."
         data_tests:
           - unique
           - not_null
@@ -99,8 +128,17 @@ models:
                 to: ref('dim_user')
                 field: user_id
       - name: product_id
+        description: "The product the policy was sold as (from its first transaction)."
         data_tests:
           - relationships:
               arguments:
                 to: ref('dim_product')
                 field: product_id
+      - name: policy_start_date
+        description: "Start date of the policy's first transaction."
+      - name: net_gwp
+        description: "Sum of transaction_gwp across the policy. Reconciled to reported_policy_total_gwp."
+      - name: net_total_amount
+        description: "Sum of premium + tax across the policy, net of refunds. Used for Q1's 'total transaction value'."
+      - name: reported_policy_total_gwp
+        description: "policy_total_gwp from the source, taken once per policy (never summed). Used only for reconciliation."
