@@ -11,6 +11,9 @@ them. Assumptions are listed at the end.
 Requires Python 3.10+. DuckDB needs no account or credentials. Tested with dbt-core 1.12.
 
 ```bash
+cd ..
+git clone https://github.com/Khalid-Ghzaoui/zego_ae_task.git zego-check
+cd zego-check 
 python -m venv .venv
 .venv\Scripts\activate # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install dbt-duckdb
@@ -21,9 +24,6 @@ dbt show --select q1_fixed_policy_users --profiles-dir . # likewise q2 (--limit 
 
 `seeds/` holds sample data · `models/staging/` one cleaned model per source ·
 `models/marts/` the star schema · `analyses/` the Q1–Q4 SQL · `tests/` reconciliation test.
-On Snowflake: seeds become `source()`s, JSON parsing becomes
-`transaction_breakdown:transaction:premium::number(10,2)`, and `interval 1 month`
-becomes `dateadd`.
 
 ---
 
@@ -75,6 +75,7 @@ erDiagram
     fct_policy_transaction {
         string  transaction_sk PK
         int     inception_policy_id FK
+        int     user_id FK
         int     product_id FK
         int     transaction_type_id FK
         date    accounting_date
@@ -84,6 +85,7 @@ erDiagram
     }
     fct_policy {
         int     inception_policy_id PK
+        int     user_id FK
         int     product_id FK "product sold as"
         decimal net_gwp
         decimal net_total_amount "Q1"
