@@ -1,112 +1,66 @@
 # Zego Analytics Engineering – Take-Home Task
 
-A small dbt project that models Zego's policy transaction data into a star schema that a BI user can answer all four Part 1 questions from.
+A dbt project (DuckDB) that models the policy transaction data into a star schema a BI
+user can answer all four Part 1 questions from. It runs on hand-built sample data
+covering every edge case in the data dictionary; the expected answer to each question
+was calculated by hand before any SQL was written, and the model reproduces all of
+them. Assumptions are listed at the end.
 
-It runs end to end on hand-built sample data designed to cover every edge case in th edata dictionary: mid-term adjustments, corrections, refunds, renewals, a vehicle change mid-policy and zero-value policy. The expected answer to each question was calculated manually from that data **before** any SQL was written, and the model reproduces all of them. 40 tests run on every build. 
+## How to run
 
---- 
-
-## 1. How to run
-
-Requires pythonn 3.10+ and Git. Built on **DuckDB**, so there is nothing to set up: no account, credentials or server. Tested with dbt-core 1.12 and dbt-duckdb 1.11.
+Requires Python 3.10+. DuckDB needs no account or credentials. Tested with dbt-core 1.12.
 
 ```bash
-git clone https://github.com/Khalid-Ghzaoui/zego_ae_task.git
-cd YOUR-REPO
 python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # macOS / Linux
+.venv\Scripts\activate # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install dbt-duckdb
-
-dbt deps  --profiles-dir .      # installs dbt_utils
-dbt build --profiles-dir .      # loads sample data, builds 10 models, runs 40 tests
+dbt deps  --profiles-dir .
+dbt build --profiles-dir . # sample data, 10 models, 40 tests
+dbt show --select q1_fixed_policy_users --profiles-dir . # likewise q2 (--limit 100), q3, q4
 ```
 
-Run the Part 1 queries:
-
-```bash
-dbt show --select q1_fixed_policy_users            --profiles-dir .
-dbt show --select q2_monthly_gwp_by_vehicle        --limit 100 --profiles-dir .
-dbt show --select q3_previous_transaction_was_mta  --limit 20  --profiles-dir .
-dbt show --select q4_tax_rate                      --limit 20  --profiles-dir .
-```
-
-**Project layout**
-
-```
-seeds/            sample data standing in for the four source tables
-models/staging/   one model per source: types cast, JSON unpacked, keys built
-models/marts/     the star schema: 4 dimensions, 2 facts
-analyses/         the SQL answering Q1–Q4, written against the marts
-test
-```
----
-
-## 2. Where each part of the brief is answered
-
-| Brief | Answer |
-|---|---|
-| **Part 1.1, Q1:** users with ≥1 fixed policy, total value > 0 | `analyses/q1_fixed_policy_users.sql` (on `fct_policy`) |
-| **Part 1.1, Q2:** monthly GWP 2025 to date by vehicle, missing months as zero | `analyses/q2_monthly_gwp_by_vehicle.sql` |
-| **Part 1.1, Q3:** flag if the previous transaction was a mid-term adjustment | Column `previous_transaction_was_mta` on `fct_policy_transaction`; `analyses/q3_previous_transaction_was_mta.sql` |
-| **Part 1.1, Q4:** tax rate on each transaction | Column `tax_rate` on `fct_policy_transaction`; `analyses/q4_tax_rate.sql` |
-| **Part 1.2:** single data model + justification + scaling | [Section 4](#4-data-model-part-12) and `models/marts/` |
-| Expected vs actual results | [Section 5](#5-results) |
-| **Part 2.1:** fanout | [Section 6](#6-part-2--data-architecture--engineering-scenarios) |
-| **Part 2.2:** incremental loads | [Section 6](#6-part-2--data-architecture--engineering-scenarios) |
-| **Part 2.3:** data quality tests for GWP | [Section 6](#6-part-2--data-architecture--engineering-scenarios); implemented in `models/marts/_marts.yml` and `tests/` |
-| **Part 3:** retention dashboard | [Section 7](#7-part-3--business-communication) |
-| Assumptions | [Section 3](#3-assumptions) |
+`seeds/` holds sample data · `models/staging/` one cleaned model per source ·
+`models/marts/` the star schema · `analyses/` the Q1–Q4 SQL · `tests/` reconciliation test.
+On Snowflake: seeds become `source()`s, JSON parsing becomes
+`transaction_breakdown:transaction:premium::number(10,2)`, and `interval 1 month`
+becomes `dateadd`.
 
 ---
 
-## 3. Assumptions
+## Part 1 – SQL & Data Modelling
 
-The brief asks for assumptions to be documented clearly. Each one below says what I assumed, why, and what woul dchange if it turned out to be wrong. 
+### 1.1 SQL queries
 
-### Data and keys
+**Q1. Users who purchased at least one fixed policy with total transaction value > 0**
+`analyses/q1_fixed_policy_users.sql`
+Each policy's transactions are summed first (`fct_policy.net_total_amount`, premium +
+tax net of refunds), then users with a fixed policy above zero are counted. A policy
+bought and fully refunded correctly doesn't count. (A7, A8)
+**Result on sample data: 3** ✅ (expected 3)
 
-| # | Assumption | Why | If wrong |
-|---|---|---|---|
-| A1 | **The policy key is `inception_policy_id`.** It stays the same through mid-term adjustments, corrections and cancellations. A renewal creates a *new* `inception_policy_id`, with no link back to the previous policy. | The dictionary says `adjustment_policy_id` changes on mid-term adjustments, and `is_adjustment = false` generates a new `inception_policy_id`. | Policy-level results (Q1, `fct_policy`) would group transactions wrongly. The missing renewal link matters for retention (Part 3). |
-| A2 | **There is no transaction key in the source.** `transaction_sk` is a hash of `inception_policy_id`, `adjustment_policy_id`, `change_number` and `transaction_type_id`, and is **tested** for uniqueness rather than assumed. | No field in the dictionary uniquely identifies a transaction. | The uniqueness test fails on build, and the key gets one more column (e.g. a date). |
-| A3 | **`change_number` increases on every transaction after the first,** including corrections and cancellations, not only mid-term adjustments. | All three are `is_adjustment = true`. It is the only field that records the order of events. | Q3's ordering would need a transaction timestamp, which the source doesn't have (see Section 8). |
-| A4 | **Flex is billed daily as separate policies:** each day's charge has its own `inception_policy_id`. | Flex has no term. Otherwise daily charges on one policy would be indistinguishable rows. | If daily charges share a policy id, the key in A2 needs the billing date added. |
+**Q2. Monthly GWP for 2025 to date by vehicle type, missing months as zero**
+`analyses/q2_monthly_gwp_by_vehicle.sql`
+Every month × vehicle combination is generated first (`dim_month` × vehicle types), then
+GWP is attached, so empty combinations show 0 instead of disappearing. Refunds are
+booked in the month of cancellation, and GWP follows the vehicle insured at the time.
+(A6, A9, A10)
+**Result: 88 rows** (22 months × 4 vehicles) ✅. Non-zero months match the hand
+calculation: car Jan-25 495, Apr 50, Sep 550, Jan-26 480; van Feb-25 600, Mar −600,
+Nov −20, Dec −100; scooter May 90, Jun 27.50.
 
-### Business definitions
+**Q3. Flag whether the previous transaction on the policy was a mid-term adjustment**
+Column `previous_transaction_was_mta` on `fct_policy_transaction`
+(`analyses/q3_previous_transaction_was_mta.sql`). `LAG()` over each policy, ordered by
+`change_number`, not by date: a cancellation keeps the policy's original start date,
+so date ordering would misplace it. The first transaction is false. (A1, A3)
+**Result: true only on 1001 change 2 and 6001 change 2** ✅ (expected)
 
-| # | Assumption | Why | If wrong |
-|---|---|---|---|
-| A5 | **GWP = `transaction_gwp`**, signed (refunds negative), with corrections included. | The dictionary defines it as the GWP generated by the transaction. It's tested equal to the JSON `premium`. | n/a: it's the dictionary's own definition. |
-| A6 | **Accounting date** = `effective_end_date` for cancellations, `effective_start_date` otherwise. | A cancellation keeps the policy's *original* start date, so using it would put refunds in the month the policy was sold and restate history. | Refunds would land in the wrong month in Q2. **Known gap:** corrections have no date of their own, so they book to the policy start date (Section 8). |
-| A7 | **"Fixed" means `product_type = 'fixed'`.** Short is a separate product type and is excluded. | The supplement lists Flex, Fixed and Short as three distinct product types, and "fixed" matches one of them exactly. | To include Short in Q1: `product_type in ('fixed', 'short')`. |
-| A8 | **"Total transaction value"** = premium + tax (the JSON `total`), summed across all of a policy's transactions, net of refunds. | "Total" matches the JSON field's name, and the question's subject is the policy, so its transactions are added up first. A bought-then-fully-refunded policy correctly doesn't count. | To use GWP instead, filter on `fct_policy.net_gwp > 0` (the column already exists). Same result on the sample data. |
-| A9 | **Q2 covers January 2025 to the current month,** including the partial current month, for all four vehicle types, in one currency (GBP, Delivery vertical). | "2025 to date", and Supplement 1 says the data is Delivery. | A multi-currency source would need converting before summing. |
-| A10 | **GWP follows the vehicle on each transaction.** A policy whose vehicle changes mid-term reports later GWP under the new vehicle. For policy-level questions (Q1), a policy keeps the product it was **sold as**. | Written premium belongs to what was insured at the time. A policy needs one product for policy-level analysis, or Q1 would double-count it. | Only affects policies with a mid-term vehicle change. |
-| A11 | **Tax rate** = tax ÷ premium, null when premium is zero. | Insurance premium tax is charged on the premium. Dividing by zero would error or mislead. | n/a. A test warns if any rate falls outside 0–20% (the UK standard and higher IPT rates). |
-| A12 | **`policy_total_gwp` is never summed.** It's used only to check that our policy totals reconcile to the source. | It's a lifetime running total repeated on every row of a policy, so summing it multiplies it. | n/a. Reconciliation is tested on every build. |
+**Q4. Tax rate paid on each transaction**
+Column `tax_rate` on `fct_policy_transaction` (`analyses/q4_tax_rate.sql`).
+Tax ÷ premium from the JSON breakdown; null when premium is zero. (A11)
+**Result: 0.12 on every transaction, null on the £0 policy** ✅ (expected)
 
-### Inconsistencies in the brief
-
-- **"Three source tables"**, but the dictionary defines **four**. `transaction_type` is
-  needed for Q3 (identifying mid-term adjustments), so all four are used.
-- Supplement 1 lists **four** transaction types; the dictionary lists **five**
-  (adding `correction`). The model handles all five, and a test fails if any other
-  value appears.
-
-### Sample data
-
-The brief provides no data, so `seeds/` contains hand-built rows that follow the
-dictionary's structure exactly. The values are invented, and each row exists to
-exercise a specific rule above: a mid-term vehicle change, a correction, a full refund,
-a partial cancellation after an adjustment, a renewal, a £0 policy and a policy sold
-before 2025.
-
----
-
-## 4. Data model (Part 1.2)
-
-### Diagram
+### 1.2 Data model design
 
 ```mermaid
 erDiagram
@@ -121,37 +75,26 @@ erDiagram
     fct_policy_transaction {
         string  transaction_sk PK
         int     inception_policy_id FK
-        int     user_id FK
         int     product_id FK
         int     transaction_type_id FK
         date    accounting_date
         decimal transaction_gwp
-        decimal premium_amount
-        decimal tax_amount
-        decimal total_amount
         decimal tax_rate "Q4"
         boolean previous_transaction_was_mta "Q3"
     }
     fct_policy {
         int     inception_policy_id PK
-        int     user_id FK
         int     product_id FK "product sold as"
-        date    policy_start_date
         decimal net_gwp
         decimal net_total_amount "Q1"
-        decimal reported_policy_total_gwp "reconciliation only"
     }
     dim_product {
         int     product_id PK
         string  product_type
         string  vehicle_type
-        string  vertical
-        string  country_code
-        boolean is_billed_upfront
     }
     dim_transaction_type {
         int     transaction_type_id PK
-        string  transaction_type_description
         boolean is_mid_term_adjustment
         boolean is_cancellation
     }
@@ -163,215 +106,154 @@ erDiagram
     }
 ```
 
-### Models and their grain
-
 | Model | One row per | Answers |
 |---|---|---|
-| `fct_policy_transaction` | transaction | Q2 (GWP by month and vehicle), Q3, Q4 |
+| `fct_policy_transaction` | transaction | Q2, Q3, Q4 |
 | `fct_policy` | policy | Q1 |
-| `dim_product` | product | Filter by product type and vehicle |
-| `dim_transaction_type` | transaction type | Filter by type; flags used by the facts |
-| `dim_user` | policyholder | |
-| `dim_month` | calendar month | Q2's "missing months as zero" |
+| `dim_product`, `dim_transaction_type`, `dim_user` | product / type / user | filtering |
+| `dim_month` | month | Q2's zero months |
 
-Staging models (`models/staging/`) sit underneath: one per source table, where types
-are cast, the JSON breakdown is unpacked and `product_code` is split. They contain no
-business logic, so any future model can build on them.
+**Why this structure**
+- **A star schema:** numbers in facts, descriptions in dimensions, joined many-to-one
+  only. It's the shape Looker is built for, and dimensions can't duplicate fact rows.
+- **One model, two grains.** Q1 is a *policy* question, and Q2–Q4 are *transaction*
+  questions. A single table would either repeat policy values on every transaction
+  (and double-count them) or make every BI user re-aggregate by hand. Both facts share
+  the same dimensions, and `fct_policy` is built from `fct_policy_transaction`, so
+  their totals can't disagree. They're never joined to each other in BI.
+- **Logic lives in the model, not in queries.** The Q3 flag, the tax rate, the
+  accounting date and the month list are built in, so every user gets the same answer.
+- **Rejected:**
+  - one wide table, because it mixes grains
+  - a transaction fact only, because Q1 would need hand aggregation
+  - an intermediate layer, because it isn't needed at this size
 
-### Why this structure
-
-**A star schema** keeps the numbers in facts and the descriptions in dimensions, joined
-many-to-one. It's the shape BI tools like Looker are built for. Every join can only
-match one row on the dimension side, so joins can't duplicate rows. That is the root
-cause of fanout (Part 2.1).
-
-**One model, two grains.** The brief asks for a single model. This is one dbt graph,
-with two facts sharing the same dimensions, so filters behave the same everywhere.
-There are two facts because the questions sit at two grains: Q1 asks about *policies*,
-and Q2–Q4 ask about *transactions*. Forcing both into one table would mean either
-repeating policy-level values on every transaction (the trap `policy_total_gwp` sets in
-the source) or making every BI user re-aggregate transactions correctly by hand. The
-two facts are never joined to each other in BI: `fct_policy` is *built from*
-`fct_policy_transaction`, so their totals can never disagree.
-
-**Logic lives in the model, not in queries.** The Q3 flag, the tax rate, the accounting
-date and the month list are all built into the model, so any BI user gets the same
-answer without re-deriving it. This is why the queries in `analyses/` are short.
-
-**Considered and rejected:**
-- **One wide table:** simpler to query, but it mixes the two grains, so policy-level
-  values repeat on every transaction and get double-counted.
-- **Transaction fact only:** Q1 would need every user to aggregate policies themselves,
-  which is where double-counting creeps in.
-- **An intermediate layer:** at this size it would add pass-through models without
-  adding meaning. I'd add one as soon as logic is shared across several marts.
-
-### How it scales
-
-**New product types**
-- A new product code (for example a new vertical, country or vehicle) is split into its
-  parts automatically and appears in `dim_product`. GWP reporting picks it up with no
-  code change.
-- The `accepted_values` tests on `product_type` and `vehicle_type` are a **deliberate
-  alarm**: they fail when an unknown value appears, so it gets reviewed and the list
-  updated (one line) rather than flowing silently into reports.
-
-**New transaction types**
-- A new type is a new row in `transaction_type`. Its transactions flow into the facts
-  and GWP straight away.
-- Only if it needs *special handling* (like cancellations' accounting date) does it need
-  one new flag in `dim_transaction_type`. The facts filter on flags, never on ids, so
-  that's the only place that changes.
-- The `accepted_values` test on the description flags its arrival.
-
-**Volume**
-- `fct_policy_transaction` would become incremental at production scale. See Part 2.2.
-- The dimensions stay small.
+**How it scales**
+- **New product types:** `product_code` is split into its parts automatically, so new
+  products appear in `dim_product` and in GWP reporting with no code change.
+  `accepted_values` tests deliberately fail on an unknown product type or vehicle, so
+  it gets reviewed rather than flowing silently into reports.
+- **New transaction types:** a new row in `transaction_type` flows into GWP straight
+  away. Only a type that needs special handling (like a cancellation's accounting date)
+  needs one new flag in `dim_transaction_type`. The facts use flags, never ids, so
+  nothing else changes.
+- **Volume:** see 2.2.
 
 ---
 
-## 5. Results
+## Part 2 – Data Architecture & Engineering Scenarios
 
-Expected answers were calculated by hand from `seeds/` before any SQL was written.
-
-| Question | Expected | Actual |
-|---|---|---|
-| Q1 | 3 users (1, 5, 6) | 3 ✅ |
-| Q2 | 88 rows (22 months × 4 vehicles); non-zero: car Jan-25 495, Apr 50, Sep 550, Jan-26 480; van Feb-25 600, Mar −600, Nov −20, Dec −100; scooter May 90, Jun 27.50 | Matches ✅ |
-| Q3 | True only on policy 1001 change 2 (correction after MTA) and 6001 change 2 (cancellation after MTA) | Matches ✅ |
-| Q4 | 0.12 on every transaction; null on policy 5001 (£0 premium) | Matches ✅ |
-
-Q2 includes the current month, so its row count grows by 4 each month.
-
----
-
-## 6. Part 2 – Data architecture & engineering scenarios
-
-### 6.1 Fanout
-
-**Cause:** product (one row per product), policy (one per policy) and transaction (many
-per policy) sit at different grains. Joining them and then summing a measure from the
-"one" side repeats it once per transaction. That's exactly what happens if
-`policy_total_gwp` is summed at transaction level.
+### 2.1 Fanout handling
+**Cause:** product, policy and transaction sit at different grains. Joining them and
+summing a measure from the "one" side repeats it once per transaction, which is what
+happens if `policy_total_gwp` is summed at transaction level.
 
 **Redesign:**
-- **One fact per grain, dimensions joined many-to-one only** (Section 4). Policy-level
+- **One fact per grain,** with dimensions joined many-to-one only (1.2). Policy-level
   measures live on `fct_policy`, never on transaction rows.
 - **In Looker:**
-  - Base each explore on a fact.
   - Declare `primary_key` on every view and `relationship: many_to_one` on every join,
-    so Looker's symmetric aggregates de-duplicate if a fanout ever slips through.
-  - Keep policy and transaction analysis in separate explores rather than joining the
-    two facts.
-- **In dbt:**
-  - Unique tests on every dimension key. A duplicated dimension row is the most common
-    silent cause of fanout.
-  - A row-count test that the transaction fact matches its source. Both are
-    implemented here.
+    so symmetric aggregates de-duplicate if a fanout ever slips through.
+  - Keep separate explores for policy and transaction analysis.
+- **In dbt (implemented):**
+  - Unique tests on every dimension key, since a duplicated dimension row is the
+    commonest silent cause of fanout.
+  - A row-count test that the transaction fact matches its source.
 
-### 6.2 Incremental loads (~200M rows)
-
+### 2.2 Incremental loads (~200M rows)
 ```sql
-{{ config(
-    materialized         = 'incremental',
-    unique_key           = 'transaction_sk',
-    incremental_strategy = 'merge',
-    on_schema_change     = 'append_new_columns',
-    cluster_by           = ['accounting_date']
-) }}
+{{ config(materialized='incremental', unique_key='transaction_sk',
+          incremental_strategy='merge', on_schema_change='append_new_columns',
+          cluster_by=['accounting_date']) }}
 ...
 {% if is_incremental() %}
   where _loaded_at > (select max(_loaded_at) from {{ this }}) - interval '3 days'
 {% endif %}
 ```
 
-**Surrogate keys:** a deterministic hash of the natural key columns (as `transaction_sk`
-already is). The same transaction always gets the same key, so re-processing it *updates*
-the row instead of duplicating it. Never use row numbers or sequences, which change
-between runs.
+**Surrogate keys:** a deterministic hash of the natural key columns, as `transaction_sk`
+already is. Re-processing a row *updates* it instead of duplicating it. Never use row
+numbers or sequences.
 
 **Late-arriving data:**
-- Filter on the **load timestamp**, not the business date. A correction loaded today
-  can belong to a January policy, so a date filter would miss it.
-  (`_loaded_at` would come from ingestion; it isn't in the dictionary.)
-- A short lookback window re-processes recent loads to catch stragglers. The merge on
-  `transaction_sk` makes that safe to repeat.
-- **Window functions:** the Q3 flag looks at the *previous* transaction, which may
-  already be in the table. An incremental run must recompute every transaction for the
-  **policies touched in the batch**, not just the new rows.
+- Filter on the **load** timestamp, not the business date. A correction loaded today
+  can belong to a January policy. (`_loaded_at` would come from ingestion; it isn't in
+  the dictionary.)
+- A short lookback catches stragglers, and the merge makes re-processing safe.
+- The Q3 `LAG()` needs the policy's *previous* transaction, which may already be in
+  the table, so each run recomputes all transactions for the **policies touched in the
+  batch**, not just the new rows.
 
 **Schema evolution:**
-- `append_new_columns` stops new source columns from breaking the run.
+- `append_new_columns` stops new source columns from breaking runs.
 - The JSON `variant` absorbs new breakdown fields until they're promoted to columns.
-- **Model contracts** on the marts make a breaking change (rename, type change) fail
-  in CI instead of reaching dashboards.
-- A scheduled full refresh resets any drift, and is required whenever the logic changes.
+- Model contracts on the marts make breaking changes fail in CI rather than reach
+  dashboards.
+- Run a full refresh whenever the logic changes.
 
-`fct_policy` is far smaller. It can rebuild fully, or incrementally for the affected
-policies only.
-
-### 6.3 Data quality: three tests for reliable GWP
-
-All three are implemented and run on every build:
-
+### 2.3 Data quality: three tests for GWP (all implemented)
 1. **`transaction_sk` is unique and not null.** A duplicated transaction double-counts
    GWP.
-2. **Policy GWP reconciles to the source.** For every policy, the sum of
-   `transaction_gwp` equals the source's own `policy_total_gwp`
-   (`tests/assert_policy_gwp_reconciles_to_source.sql`). This catches missing or
-   duplicated transactions.
-3. **The two copies of GWP agree:** `transaction_gwp = premium_amount` from the JSON
-   breakdown, and `total = premium + tax`. If they ever diverge, two dashboards would
-   report different GWP for the same month.
+2. **Policy GWP reconciles to the source:** the sum of `transaction_gwp` per policy
+   equals the source's `policy_total_gwp` (`tests/assert_policy_gwp_reconciles_to_source.sql`).
+   This catches missing or duplicated transactions.
+3. **The two copies of GWP agree:** `transaction_gwp = premium_amount` from the JSON,
+   and `total = premium + tax`. If they diverged, two dashboards would report different
+   GWP for the same month.
 
-Also in place:
-- relationship tests, so no transaction loses its product (and drops out of GWP by
-  vehicle)
-- a row-count check on the fact
-- a warning if any tax rate falls outside 0–20%
-
-In production I'd add source freshness and volume anomaly checks.
+Also in place: relationship tests (no transaction loses its vehicle), a fact row-count
+check, and a warning if a tax rate falls outside 0–20%.
 
 ---
 
-## 7. Part 3 – Business communication
+## Part 3 – Business Communication
 
 *"We need a dashboard for customer retention — what should it show?"*
 
-- **Renewal rate.** Of the fixed and short policies that ended in the period, the share
+- **Renewal rate:** of the fixed and short policies that ended in the period, the share
   renewed. Shown by product, vehicle and platform.
-- **Churn, split by cause.** Mid-term cancellations vs non-renewals. They're different
-  problems (service or price during the policy vs the renewal offer), so they need
-  different fixes.
-- **Tenure and retained GWP.** How long customers stay insured across consecutive
-  policies, and how much of last year's GWP came from customers who are still with us.
-  That's retention in pounds, not just heads.
-- **Flex retention, shown separately.** Flex has no term to renew, so retention is
-  activity: active one month and still active the next. Blending it with annual
-  policies would distort both.
-- **One definition, one owner.** Each metric is defined once in dbt, with a written
-  definition and a named owner. The dashboard reads only from those definitions, so
-  Finance and Product always see the same number.
+- **Churn, split by cause:** mid-term cancellations vs non-renewals. They're different
+  problems with different fixes.
+- **Tenure and retained GWP:** how long customers stay across consecutive policies, and
+  how much of last year's GWP is still with us. Retention in pounds, not just heads.
+- **Flex, shown separately:** Flex has no term to renew, so its retention means being
+  active one month and still active the next. Blending it with annual policies distorts
+  both.
+- **One definition, one owner:** each metric is defined once in dbt with a named owner,
+  and the dashboard reads only from those definitions, so Finance and Product always
+  see the same number.
 - **Caveat: renewals aren't linked to the previous policy in the source.** They'd be
-  matched on customer and product for now; a `previous_policy_id` from engineering
-  would make this exact.
-- **Caveat: late cancellations change past months.** The dashboard should show an "as
-  of" date, and should state whether it's counting customers or policies, since a
-  customer with two vehicles has two policies.
+  matched on customer and product until engineering adds a `previous_policy_id`.
+- **Caveat: late cancellations change past months.** The dashboard shows an "as of"
+  date and states whether it counts customers or policies (a customer with two
+  vehicles has two policies).
 
 ---
 
-## 8. Source gaps and next steps
+## Assumptions
 
-**What I'd ask the source team for:**
-- **A transaction ID.** It would replace the surrogate key (A2).
-- **A transaction timestamp.** Corrections currently book to the policy start date
-  (A6), and ordering relies on `change_number` (A3).
-- **A link from a renewal to the policy it renews.** That would make retention exact
-  (Part 3).
+| # | Assumption | Why | If wrong |
+|---|---|---|---|
+| A1 | **Policy key = `inception_policy_id`.** It's stable through adjustments, corrections and cancellations. A renewal gets a new one, with no link back. | The dictionary's `adjustment_policy_id` and `is_adjustment` definitions. | Policy-level grouping (Q1) breaks; retention can't link renewals. |
+| A2 | **No transaction key in the source.** `transaction_sk` hashes `inception_policy_id`, `adjustment_policy_id`, `change_number` and `transaction_type_id`, and is **tested** unique. | No field identifies a transaction. | The test fails; add a column (e.g. a date) to the key. A source transaction ID would remove the need. |
+| A3 | **`change_number` increases on every transaction after the first,** including corrections and cancellations. | All are `is_adjustment = true`; it's the only ordering field. | Q3 would need a transaction timestamp, which the source lacks. |
+| A4 | **Flex daily charges are separate policies** (one `inception_policy_id` each). | Flex has no term; otherwise daily rows would be indistinguishable. | The key in A2 would need the billing date. |
+| A5 | **GWP = `transaction_gwp`,** signed, with corrections included. | The dictionary definition; tested equal to the JSON premium. | n/a |
+| A6 | **Accounting date** = cancellation date for cancellations, `effective_start_date` otherwise. | A cancellation keeps the original start date, so refunds would land in the sale month. | Refunds misplaced in Q2. **Gap:** corrections have no date of their own, so they book to the policy start; a transaction timestamp would fix it. |
+| A7 | **Fixed = `product_type = 'fixed'`.** Short is excluded. | Three distinct product types are listed. | To include Short: `product_type in ('fixed', 'short')`. |
+| A8 | **"Total transaction value"** = premium + tax (JSON `total`), summed per policy, net of refunds. | "Total" matches the field name; the question's subject is the policy. | Use `net_gwp > 0` instead (same result on sample data). |
+| A9 | **Q2** covers Jan 2025 to the current month inclusive, all 4 vehicle types, GBP only. | "2025 to date"; Delivery data. | Multi-currency would need conversion first. |
+| A10 | **GWP follows each transaction's vehicle.** For Q1, a policy keeps the product it was sold as. | Premium belongs to what was insured at the time; a policy needs one product to avoid double-counting. | Only affects mid-term vehicle changes. |
+| A11 | **Tax rate = tax ÷ premium,** null when premium = 0. | Insurance premium tax is levied on premium. | n/a. A test warns outside 0–20% (UK IPT rates). |
+| A12 | **`policy_total_gwp` is never summed;** it's used only for reconciliation. | It's a running total repeated on every row. | n/a |
 
-**Next steps for the model:**
-- model contracts on the marts
-- the incremental pattern from 6.2
-- masking personal data in `dim_user`
-- dbt unit tests for the Q3 window logic
+**Inconsistencies in the brief:**
+- It says "three source tables", but the dictionary defines four. `transaction_type` is
+  needed for Q3, so all four are used.
+- Supplement 1 lists four transaction types; the dictionary lists five (adding
+  `correction`). All five are handled, and a test fails on any other value.
+
+**Sample data:** no data was provided, so `seeds/` contains hand-built rows following
+the dictionary exactly. Each row exercises a rule above: a mid-term vehicle change, a
+correction, a full refund, a cancellation after an adjustment, a renewal, a £0 policy
+and a pre-2025 policy.
