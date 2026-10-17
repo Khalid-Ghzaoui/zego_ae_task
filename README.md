@@ -227,3 +227,151 @@ answer without re-deriving it. This is why the queries in `analyses/` are short.
 **Volume**
 - `fct_policy_transaction` would become incremental at production scale. See Part 2.2.
 - The dimensions stay small.
+
+---
+
+## 5. Results
+
+Expected answers were calculated by hand from `seeds/` before any SQL was written.
+
+| Question | Expected | Actual |
+|---|---|---|
+| Q1 | 3 users (1, 5, 6) | 3 ✅ |
+| Q2 | 88 rows (22 months × 4 vehicles); non-zero: car Jan-25 495, Apr 50, Sep 550, Jan-26 480; van Feb-25 600, Mar −600, Nov −20, Dec −100; scooter May 90, Jun 27.50 | Matches ✅ |
+| Q3 | True only on policy 1001 change 2 (correction after MTA) and 6001 change 2 (cancellation after MTA) | Matches ✅ |
+| Q4 | 0.12 on every transaction; null on policy 5001 (£0 premium) | Matches ✅ |
+
+Q2 includes the current month, so its row count grows by 4 each month.
+
+---
+
+## 6. Part 2 – Data architecture & engineering scenarios
+
+### 6.1 Fanout
+
+**Cause:** product (one row per product), policy (one per policy) and transaction (many
+per policy) sit at different grains. Joining them and then summing a measure from the
+"one" side repeats it once per transaction. That's exactly what happens if
+`policy_total_gwp` is summed at transaction level.
+
+**Redesign:**
+- **One fact per grain, dimensions joined many-to-one only** (Section 4). Policy-level
+  measures live on `fct_policy`, never on transaction rows.
+- **In Looker:**
+  - Base each explore on a fact.
+  - Declare `primary_key` on every view and `relationship: many_to_one` on every join,
+    so Looker's symmetric aggregates de-duplicate if a fanout ever slips through.
+  - Keep policy and transaction analysis in separate explores rather than joining the
+    two facts.
+- **In dbt:**
+  - Unique tests on every dimension key. A duplicated dimension row is the most common
+    silent cause of fanout.
+  - A row-count test that the transaction fact matches its source. Both are
+    implemented here.
+
+### 6.2 Incremental loads (~200M rows)
+
+```sql
+{{ config(
+    materialized         = 'incremental',
+    unique_key           = 'transaction_sk',
+    incremental_strategy = 'merge',
+    on_schema_change     = 'append_new_columns',
+    cluster_by           = ['accounting_date']
+) }}
+...
+{% if is_incremental() %}
+  where _loaded_at > (select max(_loaded_at) from {{ this }}) - interval '3 days'
+{% endif %}
+```
+
+**Surrogate keys:** a deterministic hash of the natural key columns (as `transaction_sk`
+already is). The same transaction always gets the same key, so re-processing it *updates*
+the row instead of duplicating it. Never use row numbers or sequences, which change
+between runs.
+
+**Late-arriving data:**
+- Filter on the **load timestamp**, not the business date. A correction loaded today
+  can belong to a January policy, so a date filter would miss it.
+  (`_loaded_at` would come from ingestion; it isn't in the dictionary.)
+- A short lookback window re-processes recent loads to catch stragglers. The merge on
+  `transaction_sk` makes that safe to repeat.
+- **Window functions:** the Q3 flag looks at the *previous* transaction, which may
+  already be in the table. An incremental run must recompute every transaction for the
+  **policies touched in the batch**, not just the new rows.
+
+**Schema evolution:**
+- `append_new_columns` stops new source columns from breaking the run.
+- The JSON `variant` absorbs new breakdown fields until they're promoted to columns.
+- **Model contracts** on the marts make a breaking change (rename, type change) fail
+  in CI instead of reaching dashboards.
+- A scheduled full refresh resets any drift, and is required whenever the logic changes.
+
+`fct_policy` is far smaller. It can rebuild fully, or incrementally for the affected
+policies only.
+
+### 6.3 Data quality: three tests for reliable GWP
+
+All three are implemented and run on every build:
+
+1. **`transaction_sk` is unique and not null.** A duplicated transaction double-counts
+   GWP.
+2. **Policy GWP reconciles to the source.** For every policy, the sum of
+   `transaction_gwp` equals the source's own `policy_total_gwp`
+   (`tests/assert_policy_gwp_reconciles_to_source.sql`). This catches missing or
+   duplicated transactions.
+3. **The two copies of GWP agree:** `transaction_gwp = premium_amount` from the JSON
+   breakdown, and `total = premium + tax`. If they ever diverge, two dashboards would
+   report different GWP for the same month.
+
+Also in place:
+- relationship tests, so no transaction loses its product (and drops out of GWP by
+  vehicle)
+- a row-count check on the fact
+- a warning if any tax rate falls outside 0–20%
+
+In production I'd add source freshness and volume anomaly checks.
+
+---
+
+## 7. Part 3 – Business communication
+
+*"We need a dashboard for customer retention — what should it show?"*
+
+- **Renewal rate.** Of the fixed and short policies that ended in the period, the share
+  renewed. Shown by product, vehicle and platform.
+- **Churn, split by cause.** Mid-term cancellations vs non-renewals. They're different
+  problems (service or price during the policy vs the renewal offer), so they need
+  different fixes.
+- **Tenure and retained GWP.** How long customers stay insured across consecutive
+  policies, and how much of last year's GWP came from customers who are still with us.
+  That's retention in pounds, not just heads.
+- **Flex retention, shown separately.** Flex has no term to renew, so retention is
+  activity: active one month and still active the next. Blending it with annual
+  policies would distort both.
+- **One definition, one owner.** Each metric is defined once in dbt, with a written
+  definition and a named owner. The dashboard reads only from those definitions, so
+  Finance and Product always see the same number.
+- **Caveat: renewals aren't linked to the previous policy in the source.** They'd be
+  matched on customer and product for now; a `previous_policy_id` from engineering
+  would make this exact.
+- **Caveat: late cancellations change past months.** The dashboard should show an "as
+  of" date, and should state whether it's counting customers or policies, since a
+  customer with two vehicles has two policies.
+
+---
+
+## 8. Source gaps and next steps
+
+**What I'd ask the source team for:**
+- **A transaction ID.** It would replace the surrogate key (A2).
+- **A transaction timestamp.** Corrections currently book to the policy start date
+  (A6), and ordering relies on `change_number` (A3).
+- **A link from a renewal to the policy it renews.** That would make retention exact
+  (Part 3).
+
+**Next steps for the model:**
+- model contracts on the marts
+- the incremental pattern from 6.2
+- masking personal data in `dim_user`
+- dbt unit tests for the Q3 window logic
