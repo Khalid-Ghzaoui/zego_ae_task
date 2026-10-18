@@ -1,5 +1,5 @@
 -- Grain: one row per policy transaction
--- The source has no transaction id, so transaction_sk is built from the columns that together identify a transaction, and tested for uniqueness (A2).
+-- The source has no transaction id, so transaction_sk is built from the columns that together identify a transaction, and tested for uniqueness.
 
 with source as (
     
