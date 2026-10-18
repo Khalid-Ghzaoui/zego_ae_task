@@ -14,7 +14,7 @@ transaction_types as (
 ), 
 
 -- Join scope: many transactions to one transaction type 
--- Left join so a missing type surfaces as a failed test rather than silently dropping GWP (Gross Writen Premium). Row count is tested to equal stg_policy_transaction
+-- Left join so a missing type surfaces as a failed test rather than silently dropping GWP (gross written premium). Row count is tested to equal stg_policy_transaction
 joined as (
 
     select 

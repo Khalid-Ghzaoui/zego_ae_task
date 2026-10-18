@@ -1,5 +1,5 @@
 -- Q1: number of users who purchased at least one fixed policy with total transaction value > 0.
--- "Total transaction value" = premium + tax across all of the policy's transactions, net of refunds (fct_policy.net_totla_amount).
+-- "Total transaction value" = premium + tax across all of the policy's transactions, net of refunds (fct_policy.net_total_amount).
 
 select 
     count(distinct fct_policy.user_id) as users_with_fixed_policy

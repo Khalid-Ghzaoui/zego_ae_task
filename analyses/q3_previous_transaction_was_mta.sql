@@ -1,6 +1,6 @@
 -- Q3: flag whether the previous transaction on the same policy was a mid-term adjustment. The flag is built into fct_policy_transaction
 -- (previous_transaction_was_mta), so BI users get it without re-deriving it.
--- Expected on the sample data: true only for policy 1001 change 2 policy 6001 change 2
+-- Expected on the sample data: true only for policy 1001 change 2 and policy 6001 change 2
 
 select 
     fct.inception_policy_id, 

@@ -1,4 +1,4 @@
--- Q2: monthly GWP (gross written premium) for 2025 to date by vehicle type, missing motnhs as zero.
+-- Q2: monthly GWP (gross written premium) for 2025 to date by vehicle type, missing months as zero.
 -- Every month x vehicle type combination is generated first and GWP is attached to it, so combinations with no transactions show 0 instead of disappearing. 
 
 with months as (
@@ -27,6 +27,7 @@ monthly_gwp as (
     inner join {{ ref('dim_product') }} as dim_product
         on fct.product_id = dim_product.product_id
     where fct.accounting_date >= date '2025-01-01'
+        and fct.accounting_date <= current_date
     group by 1, 2
 )
 

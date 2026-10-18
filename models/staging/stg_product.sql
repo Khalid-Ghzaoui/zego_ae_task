@@ -1,5 +1,5 @@
 -- Grain: one row per product
--- product code is country_vertical_type; split it so BI users can filter on product_type and vehicle_type directly instead of string matching
+-- product code is country_vertical_type_vehicle; split it so BI users can filter on product_type and vehicle_type directly instead of string matching
 
 select
     cast(product_id as integer)          as product_id,

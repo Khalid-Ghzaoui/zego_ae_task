@@ -14,7 +14,7 @@ policy_openings as (
         inception_policy_id, 
         user_id, 
         product_id, 
-        effective_start_date as policy_start_date, 
+        effective_start_date as policy_start_date
     from transactions 
     qualify row_number() over (partition by inception_policy_id order by change_number, transaction_sk) = 1
 ), 
