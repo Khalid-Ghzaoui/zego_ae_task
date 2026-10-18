@@ -44,11 +44,13 @@ models:
           - not_null
       - name: product_type
         data_tests:
+          - not_null
           - accepted_values:
               arguments:
                 values: ['flex', 'fixed', 'short']
       - name: vehicle_type
         data_tests:
+          - not_null
           - accepted_values:
               arguments:
                 values: ['car', 'van', 'scooter', 'taxi']
@@ -62,6 +64,7 @@ models:
           - not_null
       - name: transaction_type_description
         data_tests:
+          - not_null
           - accepted_values:
               arguments:
                 values: ['new_policy', 'mid_term_adjustment', 'renewal', 'correction', 'cancellation']

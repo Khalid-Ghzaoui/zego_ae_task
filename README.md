@@ -18,7 +18,7 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
 dbt deps  --profiles-dir .
-dbt build --profiles-dir .      # sample data, 10 models, 51 data tests, 2 unit tests
+dbt build --profiles-dir .      # sample data, 10 models, 54 data tests, 2 unit tests
 dbt show --select q1_fixed_policy_users --profiles-dir .   # likewise q2 (--limit 100), q3, q4
 ```
 
