@@ -1,0 +1,47 @@
+unit_tests:
+  - name: previous_transaction_was_mta_follows_change_number
+    description: >
+      Q3. True only when the previous transaction on the same policy, ordered by change_number, is a mid-term adjustment. 
+      Both corrections and cancellations keep the policy's original start date, so ordering by date would get these wrong.
+    model: fct_policy_transaction
+    given:
+      - input: ref('stg_policy_transaction')
+        rows:
+          - {transaction_sk: 'p1_0', inception_policy_id: 1, change_number: 0, transaction_type_id: 3, effective_start_date: '2025-01-10', effective_end_date: '2026-01-09'}
+          - {transaction_sk: 'p1_1', inception_policy_id: 1, change_number: 1, transaction_type_id: 1, effective_start_date: '2025-04-01', effective_end_date: '2026-01-09'}
+          - {transaction_sk: 'p1_2', inception_policy_id: 1, change_number: 2, transaction_type_id: 4, effective_start_date: '2025-01-10', effective_end_date: '2026-01-09'}
+          - {transaction_sk: 'p2_0', inception_policy_id: 2, change_number: 0, transaction_type_id: 3, effective_start_date: '2025-09-15', effective_end_date: '2026-09-14'}
+          - {transaction_sk: 'p2_1', inception_policy_id: 2, change_number: 1, transaction_type_id: 1, effective_start_date: '2025-11-01', effective_end_date: '2026-09-14'}
+          - {transaction_sk: 'p2_2', inception_policy_id: 2, change_number: 2, transaction_type_id: 5, effective_start_date: '2025-09-15', effective_end_date: '2025-12-10'}
+      - input: ref('dim_transaction_type')
+        rows:
+          - {transaction_type_id: 1, is_mid_term_adjustment: true,  is_cancellation: false}
+          - {transaction_type_id: 3, is_mid_term_adjustment: false, is_cancellation: false}
+          - {transaction_type_id: 4, is_mid_term_adjustment: false, is_cancellation: false}
+          - {transaction_type_id: 5, is_mid_term_adjustment: false, is_cancellation: true}
+    expect:
+      rows:
+        - {transaction_sk: 'p1_0', previous_transaction_was_mta: false}
+        - {transaction_sk: 'p1_1', previous_transaction_was_mta: false}
+        - {transaction_sk: 'p1_2', previous_transaction_was_mta: true}
+        - {transaction_sk: 'p2_0', previous_transaction_was_mta: false}
+        - {transaction_sk: 'p2_1', previous_transaction_was_mta: false}
+        - {transaction_sk: 'p2_2', previous_transaction_was_mta: true}
+
+  - name: tax_rate_is_tax_over_premium
+    description: "Q4. Tax / premium, null when premium is zero, and still 12% on a refund."
+    model: fct_policy_transaction
+    given:
+      - input: ref('stg_policy_transaction')
+        rows:
+          - {transaction_sk: 't1', inception_policy_id: 1, change_number: 0, transaction_type_id: 3, effective_start_date: '2025-01-01', premium_amount: 100.00, tax_amount: 12.00}
+          - {transaction_sk: 't2', inception_policy_id: 2, change_number: 0, transaction_type_id: 3, effective_start_date: '2025-01-01', premium_amount: 0.00, tax_amount: 0.00}
+          - {transaction_sk: 't3', inception_policy_id: 3, change_number: 0, transaction_type_id: 3, effective_start_date: '2025-01-01', premium_amount: -50.00, tax_amount: -6.00}
+      - input: ref('dim_transaction_type')
+        rows:
+          - {transaction_type_id: 3, is_mid_term_adjustment: false, is_cancellation: false}
+    expect:
+      rows:
+        - {transaction_sk: 't1', tax_rate: 0.12}
+        - {transaction_sk: 't2', tax_rate: null}
+        - {transaction_sk: 't3', tax_rate: 0.12}

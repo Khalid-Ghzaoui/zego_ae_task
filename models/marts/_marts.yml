@@ -63,6 +63,7 @@ models:
           - not_null
       - name: user_id
         data_tests:
+          - not_null
           - relationships:
               arguments:
                 to: ref('dim_user')
@@ -77,12 +78,14 @@ models:
       - name: product_id
         description: "Product on this transaction. Can change mid-policy (e.g. a vehicle change), so GWP follows the vehicle insured at the time."
         data_tests:
+          - not_null
           - relationships:
               arguments:
                 to: ref('dim_product')
                 field: product_id
       - name: transaction_type_id
         data_tests:
+          - not_null
           - relationships:
               arguments:
                 to: ref('dim_transaction_type')
@@ -123,6 +126,7 @@ models:
           - not_null
       - name: user_id
         data_tests:
+          - not_null
           - relationships:
               arguments:
                 to: ref('dim_user')
@@ -130,6 +134,7 @@ models:
       - name: product_id
         description: "The product the policy was sold as (from its first transaction)."
         data_tests:
+          - not_null
           - relationships:
               arguments:
                 to: ref('dim_product')

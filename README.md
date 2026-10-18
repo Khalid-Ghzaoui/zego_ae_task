@@ -10,6 +10,8 @@ them. Assumptions are listed at the end.
 
 Requires Python 3.10+. DuckDB needs no account or credentials. Tested with dbt-core 1.12
 
+
+
 ```bash
 cd ..
 git clone https://github.com/Khalid-Ghzaoui/zego_ae_task.git zego-check
@@ -17,6 +19,11 @@ cd zego-check
 python -m venv .venv
 .venv\Scripts\activate # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install dbt-duckdb
+
+
+
+
+
 dbt deps  --profiles-dir .
 dbt build --profiles-dir . # sample data, 10 models, 40 tests
 dbt show --select q1_fixed_policy_users --profiles-dir . # likewise q2 (--limit 100), q3, q4

@@ -1,6 +1,10 @@
 models:
   - name: stg_policy_transaction
     description: "One row per policy transaction. Types cast, JSON breakdown unpacked, surrogate key added."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['inception_policy_id', 'change_number']
     columns:
       - name: transaction_sk
         description: "Surrogate key. The source has no transaction id."
@@ -9,6 +13,16 @@ models:
           - not_null
       - name: inception_policy_id
         description: "Policy key. Stable across mid-term adjustments; a renewal gets a new one."
+        data_tests:
+          - not_null
+      - name: change_number
+        description: "Order of transactions within a policy. Tested unique per policy because Q3 depends on it (A3)."
+        data_tests:
+          - not_null
+      - name: transaction_gwp
+        data_tests:
+          - not_null
+      - name: policy_total_gwp
         data_tests:
           - not_null
       - name: premium_amount

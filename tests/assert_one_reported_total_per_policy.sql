@@ -1,0 +1,1 @@
+-- policy_total_gwp is taken once per policy
