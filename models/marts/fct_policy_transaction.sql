@@ -53,7 +53,7 @@ final as (
 
         -- Q3: was the previous transaction on this policy a mid-term adjustment? 
         -- Ordered by change_number, not dates: a cancellation's start date is the original policy date, so date ordering would misplace it. 
-        -- transaction_sk breaks any remaining tie so the result is deterministic. The first transaction has no previous one, so it is false
+        -- change_number is tested unique per policy, so the order is deterministic. The first transaction has no previous one, so it is false.
         coalesce(
             lag(is_mid_term_adjustment) over(partition by inception_policy_id order by change_number), 
                 false

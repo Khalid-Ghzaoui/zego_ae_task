@@ -1,7 +1,7 @@
 # Zego Analytics Engineering – Take-Home Task
 
 A dbt project (DuckDB) that models the policy transaction data into a star schema a BI
-user can answer all four Part 1 questions from. It runs on hand-built sample data
+user can answer all four Part 1 questions from. It runs on sample data
 covering every edge case in the data dictionary. The expected answer to each question
 was defined before any SQL was written, and the model reproduces all of them.
 Assumptions are listed at the end.
@@ -24,9 +24,6 @@ dbt show --select q1_fixed_policy_users --profiles-dir .   # likewise q2 (--limi
 
 `seeds/` sample data · `models/staging/` one cleaned model per source ·
 `models/marts/` the star schema · `analyses/` the Q1–Q4 SQL · `tests/` singular tests.
-On Snowflake: seeds become `source()`s, JSON parsing becomes
-`transaction_breakdown:transaction:premium::number(10,2)`, and `interval 1 month`
-becomes `dateadd`.
 
 ---
 
@@ -38,9 +35,7 @@ becomes `dateadd`.
 `analyses/q1_fixed_policy_users.sql`
 Each policy's transactions are summed first (`fct_policy.net_total_amount`: premium +
 tax, net of refunds), then users with a fixed policy above zero are counted. Under this
-definition a policy bought and then fully refunded is excluded; counting any positive
-fixed transaction instead would give 4.
-**Result: 3**
+definition a policy bought and then fully refunded is excluded.
 
 **Q2. Monthly GWP for 2025 to date by vehicle type, missing months as zero**
 `analyses/q2_monthly_gwp_by_vehicle.sql`
@@ -48,24 +43,19 @@ Every month × vehicle combination is generated first (`dim_month` × vehicle ty
 GWP is attached, so empty combinations show 0 instead of disappearing. Refunds are
 booked in the month of cancellation, GWP follows the vehicle insured at the time, and
 transactions are cut off at today's date.
-**Result: 88 rows** (22 months × 4 vehicles). Non-zero months: car Jan-25 495, Apr 50,
-Sep 550, Jan-26 480; van Feb-25 600, Mar −600, Nov −20, Dec −100; scooter May 90,
-Jun 27.50. "To date" moves with the calendar, so the row count grows by 4 each month.
 
 **Q3. Flag whether the previous transaction on the policy was a mid-term adjustment**
 Column `previous_transaction_was_mta` on `fct_policy_transaction`
 (`analyses/q3_previous_transaction_was_mta.sql`). `LAG()` over each policy, ordered by
-`change_number`, not by date: corrections and cancellations keep the policy's original
+`change_number`: corrections and cancellations keep the policy's original
 start date, so date ordering would misplace them. The first transaction is false. The
 ordering (`change_number` unique per policy) is tested, and a unit test fixes the
 expected flags.
-**Result: true only on policy 1001 change 2 and policy 6001 change 2**
 
 **Q4. Tax rate paid on each transaction**
 Column `tax_rate` on `fct_policy_transaction` (`analyses/q4_tax_rate.sql`).
 Tax ÷ premium from the JSON breakdown; null when premium is zero. A unit test checks
 the exact rate, including zero and negative premiums.
-**Result: 0.12 on every transaction, null on the £0 policy**
 
 ### 1.2 Data model design
 
@@ -86,7 +76,7 @@ erDiagram
         int     product_id FK
         int     transaction_type_id FK
         date    accounting_date
-        decimal transaction_gwp
+        decimal transaction_gwp "Q2"
         decimal tax_rate "Q4"
         boolean previous_transaction_was_mta "Q3"
     }
@@ -124,14 +114,15 @@ erDiagram
 
 **Why this structure**
 - **A star schema:** numbers in facts, descriptions in dimensions, joined many-to-one
-  only. It's the shape Looker is built for, and with unique dimension keys (tested),
+  only, and with unique dimension keys (tested),
   dimensions can't duplicate fact rows.
 - **One model, two grains.** Q1 is a *policy* question; Q2–Q4 are *transaction*
-  questions. Putting policy-level values on transaction rows would repeat them on every
-  row, and leaving Q1 on the transaction fact would make every BI user re-aggregate by
-  hand. Both facts share the same dimensions, and `fct_policy` is built from
-  `fct_policy_transaction`, so their totals can't disagree. Because GWP follows each
-  transaction's vehicle, they can differ *by vehicle* for a policy whose vehicle changed.
+  questions. From the transaction fact alone, a BI user would have to sum per policy,
+  filter, then count users: a second level of aggregation a BI tool can't do without a
+  derived table. Putting policy values on transaction rows instead would repeat them on
+  every row. `fct_policy` is built from `fct_policy_transaction`, so their totals match.
+  Split by vehicle they can differ for a policy whose vehicle changed: the transaction
+  fact uses each transaction's vehicle, `fct_policy` the vehicle the policy was sold as.
 - **Logic lives in the model, not in queries.** The Q3 flag, the tax rate, the
   accounting date and the month list are built in, so every user gets the same answer.
 - **Rejected:** one wide table (policy-level values would repeat on every transaction
@@ -147,7 +138,9 @@ erDiagram
   away. Only a type that needs special handling (like a cancellation's accounting date)
   needs one new flag in `dim_transaction_type`. The facts use flags, never ids, so
   nothing else changes.
-- **Volume:** see 2.2.
+- **Volume:** the transaction fact becomes incremental, clustered on accounting date
+  (2.2), and `fct_policy` is updated only for the policies touched in each load. The
+  dimensions stay small.
 
 ---
 
@@ -161,11 +154,11 @@ happens if `policy_total_gwp` is summed at transaction level.
 **Redesign:**
 - **One fact per grain,** with dimensions joined many-to-one only. Policy-level
   measures live on `fct_policy`, never on transaction rows.
-- **In Looker:** separate explores for policy and transaction analysis, with the correct
-  `primary_key` on every view and the true `relationship` on every join. Declarations
-  don't make a relationship true: declaring `many_to_one` on a join that actually fans
-  out switches off Looker's symmetric-aggregate protection. That's why cardinality is
-  enforced by dbt tests.
+- **In the BI layer (Looker):** separate explores for policy and transaction analysis,
+  each view with its correct primary key and each join with its true relationship. A
+  declared relationship doesn't make it true: a join declared many-to-one that actually
+  fans out turns off Looker's protection against double counting. So cardinality is
+  enforced by dbt tests, not trusted to the BI layer.
 - **In dbt (implemented):** unique tests on every dimension key (a duplicated dimension
   row is the commonest silent cause of fanout), and a row-count test that the
   transaction fact matches its source.
@@ -229,7 +222,7 @@ falls outside 0–20%.
 *"We need a dashboard for customer retention — what should it show?"*
 
 - **Renewal rate:** of the fixed and short policies that reached their end date in the
-  period, the share renewed within an agreed grace period. Early cancellations count as
+  period, the share renewed within an agreed period. Early cancellations count as
   churn, not as eligible renewals. Shown by product and vehicle.
 - **Churn, split by cause:** mid-term cancellations vs non-renewals. They're different
   problems with different fixes.
@@ -260,11 +253,11 @@ falls outside 0–20%.
 | **GWP = `transaction_gwp`,** signed, with corrections included. | The dictionary definition; tested equal to the JSON premium. | n/a |
 | **Accounting date** = cancellation date for cancellations, `effective_start_date` otherwise. | A cancellation keeps the original start date, so refunds would land in the sale month. | Refunds misplaced in Q2. Gap: corrections have no date of their own, so they book to the policy start; a transaction timestamp would fix it. |
 | **Fixed = `product_type = 'fixed'`.** Short is excluded. | Three distinct product types are listed. | To include Short: `product_type in ('fixed', 'short')`. |
-| **"Total transaction value"** = premium + tax (JSON `total`), summed per policy, net of refunds. | "Total" matches the field name; the question's subject is the policy. | `net_gwp > 0` gives the same result here. Counting any positive fixed transaction, ignoring refunds, gives 4. |
-| **Q2 covers Jan 2025 to today,** all 4 vehicle types, GBP only. | "2025 to date"; Delivery data. | A 2025-only reading gives 48 rows (12 × 4). Multi-currency would need conversion first. |
+| **"Total transaction value"** = premium + tax (JSON `total`), summed per policy, net of refunds. | "Total" matches the field name; the question's subject is the policy. | If it means any positive fixed transaction, a fully refunded policy would count: filter transactions instead of policy totals. |
+| **Q2 covers Jan 2025 to today,** all 4 vehicle types, GBP only. | "2025 to date"; every product code is `gb_delivery_…`. | A 2025-only reading caps the query at 31 Dec 2025. Multi-currency would need conversion first. |
 | **GWP follows each transaction's vehicle;** for Q1, a policy keeps the product it was sold as. | Premium belongs to what was insured at the time; a policy needs one product to avoid double-counting. | Only affects mid-term vehicle changes. |
 | **Tax rate = tax ÷ premium,** null when premium = 0. | Insurance premium tax is levied on premium. | n/a. A test warns outside 0–20% (UK IPT rates). |
-| **`policy_total_gwp` is never summed;** it's used only for reconciliation. | It's a running total repeated on every row. | Tested: a policy must carry one value. If the source stored a running total per event, the latest value would be needed instead. |
+| **`policy_total_gwp` is never summed;** it's used only for reconciliation. | It's the policy's total, repeated on every transaction row. | Tested: a policy must carry one value. If the source stored a running total per event, the latest value would be needed instead. |
 | **A policy's first transaction is a new policy or a renewal;** `fct_policy` takes the owner, product and start date from it. | That's how a policy opens. | An incomplete history would give the wrong start date and product. Tested: a policy opening with anything else fails the build. |
 
 **Inconsistencies in the brief:**
@@ -273,7 +266,7 @@ falls outside 0–20%.
 - Supplement 1 lists four transaction types; the dictionary lists five (adding
   `correction`). All five are handled, and a test fails on any other value.
 
-**Sample data:** no data was provided, so `seeds/` contains hand-built rows following
+**Sample data:** no data was provided, so `seeds/` contains sample rows following
 the dictionary exactly, covering a mid-term vehicle change, a correction, a full
 refund, a cancellation after an adjustment, a renewal, a £0 policy and a pre-2025
 policy.
